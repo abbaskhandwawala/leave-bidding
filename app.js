@@ -178,7 +178,7 @@ function renderLogin() {
     el('div', { class: 'row' }, el('button', { class: 'btn pri', type: 'submit', text: 'Sign in' })), msg);
   form.onsubmit = async e => { e.preventDefault(); msg.className = 'msg'; msg.textContent = 'Signing in…'; try { await B.signIn(id.value, pw.value); } catch (er) { msg.className = 'msg bad'; msg.textContent = errText(er); } };
   const extra = B.demo ? el('p', { class: 'note' }, `DEMO MODE: not connected to Firebase yet; data stays in this browser. Try staff number ${Object.values(B.demoIds())[0]} (${Object.keys(B.demoIds())[0]}) or "manager", password Demo@2027. `, el('button', { class: 'btn', type: 'button', text: 'Clear demo data', onclick: () => B.reset() })) : null;
-  $('login-box').replaceChildren(el('p', { class: 'sub', text: 'Sign in with your staff number. First time: use the first-login password the OCC Manager gave you; you will be asked to choose your own password straight away. Forgot your password? Ask the OCC Manager to reset it.' }), form, extra);
+  $('login-box').replaceChildren(el('p', { class: 'sub', text: 'Sign in with your staff number. First time: use the first-login password the OCC Manager gave you; you will be asked to choose your own password straight away. Forgot your password? Ask the OCC Manager to reset it.' }), form, ...(extra ? [extra] : []));
 }
 
 function renderPw(first) {
