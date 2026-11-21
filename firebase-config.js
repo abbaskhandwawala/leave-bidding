@@ -1,4 +1,4 @@
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: "AIzaSyCdi-U13u5mU6cqHZl_YrU-s1J3Ak0xFmI",
   authDomain: "iocc-leave-bidding.firebaseapp.com",
   projectId: "iocc-leave-bidding",
