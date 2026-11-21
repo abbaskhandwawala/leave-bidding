@@ -25,7 +25,7 @@ const DXB = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dubai', day: '2-d
 const when = ms => ms ? DXB.format(new Date(ms)) : '';
 const isLead = p => p === 'SL' || p === 'PO';
 const other = g => g === 'A' ? 'B' : 'A';
-const loginEmail = id => `${String(id).trim().toLowerCase()}@${LOGIN_DOMAIN}`;
+const loginEmail = id => { const v = String(id).trim().toLowerCase(); return v.includes('@') ? v : `${v}@${LOGIN_DOMAIN}`; };   // staff sign in with their staff number; a manager may use an email
 const toast = t => { const e = $('toast'); e.textContent = t; e.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => e.hidden = true, 5000); };
 const errText = e => { const c = (e && e.code) || ''; return ({ 'auth/invalid-credential': 'Staff number or password is wrong.', 'auth/wrong-password': 'Staff number or password is wrong.', 'auth/user-not-found': 'No login for this staff number. Ask the OCC Manager.', 'auth/invalid-email': 'Enter your staff number (digits only).', 'auth/weak-password': 'Use at least 8 characters.', 'auth/requires-recent-login': 'Please sign out, sign in again and then change your password.', 'auth/too-many-requests': 'Too many attempts. Wait a few minutes and try again.', 'auth/email-already-in-use': 'A login already exists for this staff number.', 'permission-denied': 'Not allowed: bidding may be closed, or your password has not been changed yet.' })[c] || (e && e.message) || String(e); };
 
@@ -171,10 +171,10 @@ function demoBackend() {
 function show(which) { for (const id of ['s-login', 's-pw', 's-nolist', 's-app']) $(id).hidden = id !== which; }
 
 function renderLogin() {
-  const id = el('input', { type: 'text', id: 'l-id', inputmode: 'numeric', autocomplete: 'username', placeholder: 'e.g. 123456', 'aria-label': 'Staff number' });
+  const id = el('input', { type: 'text', id: 'l-id', autocomplete: 'username', placeholder: 'e.g. 123456', 'aria-label': 'Staff number' });
   const pw = el('input', { type: 'password', id: 'l-pw', autocomplete: 'current-password', placeholder: 'Password', 'aria-label': 'Password' });
   const msg = el('p', { class: 'msg', role: 'status' });
-  const form = el('form', { class: 'login' }, el('label', { class: 'lbl', for: 'l-id' }, 'Staff number'), id, el('label', { class: 'lbl', for: 'l-pw' }, 'Password'), pw,
+  const form = el('form', { class: 'login' }, el('label', { class: 'lbl', for: 'l-id' }, 'Staff number (manager: email)'), id, el('label', { class: 'lbl', for: 'l-pw' }, 'Password'), pw,
     el('div', { class: 'row' }, el('button', { class: 'btn pri', type: 'submit', text: 'Sign in' })), msg);
   form.onsubmit = async e => { e.preventDefault(); msg.className = 'msg'; msg.textContent = 'Signing in…'; try { await B.signIn(id.value, pw.value); } catch (er) { msg.className = 'msg bad'; msg.textContent = errText(er); } };
   const extra = B.demo ? el('p', { class: 'note' }, `DEMO MODE: not connected to Firebase yet; data stays in this browser. Try staff number ${Object.values(B.demoIds())[0]} (${Object.keys(B.demoIds())[0]}) or "manager", password Demo@2027. `, el('button', { class: 'btn', type: 'button', text: 'Clear demo data', onclick: () => B.reset() })) : null;
