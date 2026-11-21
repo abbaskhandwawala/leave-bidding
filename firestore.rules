@@ -1,0 +1,90 @@
+rules_version = '2';
+// IOCC Sharjah · Leave bidding 2027 · Firestore security rules
+// Logins are staff numbers: staff number 123456 signs in as 123456@iocc-staff.local.
+//
+// What these rules guarantee (the page cannot get around them):
+//  - Only signed-in people can read anything; only people on the staff list (or managers) see bids.
+//  - A person can only write their own slots, and only after changing the first-login password.
+//    Nobody, the manager included, can place or change a bid for someone else.
+//  - Each slot change carries the server's time, and must be written together with an audit entry.
+//  - Audit entries can be added but never edited or deleted. Slots can't be deleted (withdraw = empty date).
+//  - Bids only change while bidding is open (and before the closing time, if set).
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signedIn() { return request.auth != null && request.auth.token.email != null; }
+    function no() { return request.auth.token.email.lower().split('@')[0]; }
+    function isAdmin() { return signedIn() && exists(/databases/$(db)/documents/admins/$(no())); }
+    function isStaff() { return signedIn() && exists(/databases/$(db)/documents/staff/$(no())); }
+    function staffName() { return get(/databases/$(db)/documents/staff/$(no())).data.name; }
+    function pwChanged() { let p = /databases/$(db)/documents/pw/$(no()); return exists(p) && get(p).data.changed == true; }
+    function isOpen() {
+      let s = get(/databases/$(db)/documents/config/settings).data;
+      return s.open == true && (!('closeAt' in s) || s.closeAt == null || request.time < s.closeAt);
+    }
+
+    // Managers: document ID = the manager's login (e.g. "manager"). Added once by hand.
+    match /admins/{id} {
+      allow read: if signedIn() && id == no();
+      allow write: if false;
+    }
+
+    // Staff logins: document ID = staff number, field "name" = name exactly as in the staff list.
+    match /staff/{id} {
+      allow read: if isAdmin() || (signedIn() && id == no());
+      allow write: if isAdmin();
+    }
+
+    // Password-changed flag per staff number. The person sets it after changing their password;
+    // the manager resets it to false when an account is recreated.
+    match /pw/{id} {
+      allow read: if isAdmin() || (signedIn() && id == no());
+      allow create, update: if (isAdmin() && request.resource.data.changed == false)
+        || (signedIn() && id == no() && request.resource.data.changed == true && request.resource.data.at == request.time);
+      allow delete: if false;
+    }
+
+    // config/settings: bidding settings (any signed-in user can read).
+    // config/staff: the staff list {list:[{name,pos,grp}]}; config/initial: first-login password.
+    // Both are readable only by staff and managers.
+    match /config/{doc} {
+      allow read: if (doc == 'settings' && signedIn()) || isStaff() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Leave slots: document ID = <staff number>__<slot 1-4>.
+    match /slots/{id} {
+      allow read: if isStaff() || isAdmin();
+
+      function shapeOk() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['no', 'name', 'slot', 'start', 'ts', 'upd', 'auditId'])
+          && d.no == no()
+          && d.name == staffName()
+          && d.slot in [1, 2, 3, 4]
+          && id == no() + '__' + string(d.slot)
+          && (d.start == null || (d.start is string && d.start.matches('^2027-[0-9]{2}-[0-9]{2}$')))
+          && d.upd == request.time && d.ts == request.time;
+      }
+      function audited() {
+        let a = getAfter(/databases/$(db)/documents/audit/$(request.resource.data.auditId)).data;
+        return a.no == no() && a.slotDoc == id && a.next == request.resource.data.start && a.at == request.time;
+      }
+      allow create: if isStaff() && pwChanged() && isOpen() && shapeOk() && audited();
+      allow update: if isStaff() && pwChanged() && isOpen() && shapeOk() && resource.data.no == no()
+        && request.resource.data.start != resource.data.start && audited();
+      allow delete: if false;
+    }
+
+    // Audit log: append only.
+    match /audit/{aid} {
+      allow read: if isAdmin() || (signedIn() && resource.data.no == no());
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['no', 'name', 'action', 'slot', 'slotDoc', 'prev', 'next', 'at', 'detail'])
+        && request.resource.data.no == no()
+        && request.resource.data.at == request.time
+        && (isAdmin() || (isStaff() && request.resource.data.name == staffName()));
+      allow update, delete: if false;
+    }
+  }
+}
