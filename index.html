@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IOCC Sharjah · Leave Bidding 2027</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1 id="title">IOCC Sharjah · Leave Bidding 2027</h1>
+      <div class="sub">Up to 4 annual leave blocks of 4 days per person · priority group first, then first come, first served · live chance of approval</div>
+    </div>
+    <div class="row"><span class="pill mut" id="sync" role="status">Loading…</span><span class="pill" id="state"></span><span class="row" id="who"></span></div>
+  </header>
+  <p class="note" id="banner" hidden>Demo mode: this copy is not connected to Firebase yet. Bids are kept only in this browser.</p>
+
+  <section class="card" id="s-login" hidden><h2>Sign in</h2><div id="login-box"></div></section>
+  <section class="card" id="s-pw" hidden><h2>Choose your own password</h2><div id="pw-box"></div></section>
+  <section class="card" id="s-nolist" hidden><h2>Not on the staff list</h2><div id="nolist-box"></div></section>
+
+  <div id="s-app" hidden style="display:flex;flex-direction:column;gap:14px">
+    <div class="hero" id="hero"></div>
+    <section class="card" id="mine-card">
+      <div class="cardhead"><h2>Your slots</h2><span class="sub" id="mine-sub"></span></div>
+      <div id="mine" style="display:flex;flex-direction:column;gap:8px"></div>
+    </section>
+    <section class="card" id="pick-card">
+      <div class="cardhead"><h2 id="pick-title">Choose a block</h2>
+        <div class="row">
+          <label class="lbl" for="f-month">Blocks starting in <select id="f-month"></select></label>
+          <label class="lbl" for="f-date">or jump to a date <input type="date" id="f-date" min="2027-01-01" max="2027-12-28"></label>
+          <label class="lbl"><input type="checkbox" id="f-free"> Only blocks with no conflict</label>
+        </div></div>
+      <div class="legend"><span><i style="background:var(--ok)"></i>No conflict</span><span><i style="background:var(--warn)"></i>Overlaps another leave · uses one of your group's overlaps</span><span><i style="background:var(--bad)"></i>Not possible under the rules</span></div>
+      <div id="blocks" class="tblwrap" style="max-height:560px"></div>
+    </section>
+    <section class="card">
+      <div class="cardhead"><h2>Leave calendar 2027</h2><span class="sub">people on approved leave each day · your blocks outlined</span></div>
+      <div class="legend"><span><i style="background:color-mix(in srgb,var(--ok) 30%,transparent)"></i>1 on leave</span><span><i style="background:color-mix(in srgb,var(--warn) 40%,transparent)"></i>2</span><span><i style="background:var(--bad)"></i>3 or more</span></div>
+      <div class="cal" id="cal"></div>
+    </section>
+    <section class="card">
+      <div class="cardhead"><h2>All bids so far</h2><span class="sub" id="res-sub"></span></div>
+      <div class="tblwrap" style="max-height:480px"><table id="results"></table></div>
+    </section>
+    <section class="card" id="myaudit-card">
+      <div class="cardhead"><h2>Your record</h2><span class="sub">every sign-in and slot change, with the server's time · cannot be edited</span></div>
+      <div class="tblwrap" style="max-height:300px"><table id="myaudit"></table></div>
+    </section>
+    <section class="card admin" id="admin" hidden>
+      <div class="cardhead"><h2>OCC Manager controls</h2><span class="sub">only managers see this · managers cannot bid for anyone</span></div>
+      <h3>Settings</h3>
+      <div id="adm-set" style="display:flex;flex-direction:column;gap:10px"></div>
+      <h3>Staff logins</h3>
+      <p class="sub">Each person signs in with their staff number. Enter the staff numbers and create the logins; everyone must change the first-login password before they can bid.</p>
+      <div class="row" id="adm-staff-pw"></div>
+      <div class="row" id="adm-staff-bar"></div>
+      <div class="row" id="adm-staff-add"></div>
+      <div class="tblwrap" style="max-height:520px"><table id="adm-staff"></table></div>
+      <h3>Audit log</h3>
+      <div class="row"><label class="lbl" for="adm-filter">Show <select id="adm-filter"></select></label><span class="sub" id="adm-audit-n"></span><button type="button" class="btn pri" id="adm-dl">Download results and audit log (.xlsx)</button></div>
+      <div class="tblwrap" style="max-height:460px"><table id="adm-audit"></table></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>How leave is allocated</h2>
+    <ol id="rules" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;max-width:85ch"></ol>
+  </section>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
