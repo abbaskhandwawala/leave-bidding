@@ -274,7 +274,7 @@ function alertBox(A) {
   if (SLOTS.length) try { localStorage.setItem(k, JSON.stringify({ ...prev, ...nowSt })); } catch (e) { }
   if (fresh.length && SEEN !== null) toast(`Slot ${fresh.map(r => r.slot).join(', ')} is no longer approved. Please choose another block.`);
   SEEN = true;
-  if (!bad.length) return null;
+  if (!bad.length) return '';
   return el('div', { class: 'alertBox', role: 'alert', style: 'grid-column:1/-1;border:2px solid var(--bad,#c0392b);background:#fdecea;border-radius:10px;padding:10px 12px;margin-top:6px' },
     el('b', { text: `Action needed: ${bad.length} of your slots ${bad.length === 1 ? 'is' : 'are'} not approved${lost.length ? ' (changed since your last visit)' : ''}.` }),
     el('ul', { style: 'margin:6px 0 4px 18px' }, ...bad.map(r => el('li', {}, el('b', { text: `Slot ${r.slot} · ${blockLabel(r.start)}: ` }), r.why, ' ', el('button', { class: 'btn pri', type: 'button', text: `Choose a new block for slot ${r.slot}`, disabled: !isOpenNow(), onclick: () => { VIEW.target = r.slot; render(); $('pick-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); } })))),
