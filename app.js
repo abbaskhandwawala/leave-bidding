@@ -24,6 +24,12 @@ const isoOf = i => dd(i).toISOString().slice(0, 10);
 const DXB = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 const when = ms => ms ? DXB.format(new Date(ms)) : '';
 const isLead = p => p === 'SL' || p === 'PO';
+// Staff never see colleagues' names: only "someone from Group A/B". Managers see names.
+const people = list => { if (ADMIN && !ME) return list.map(x => x.name).join(', ');
+  const you = list.some(x => ME && x.name === ME.name); const c = { A: 0, B: 0 }; list.forEach(x => { if (!(ME && x.name === ME.name)) c[x.grp || (BY[x.name] || {}).grp]++; });
+  const parts = []; if (you) parts.push('you'); ['A', 'B'].forEach(g => { if (c[g]) parts.push(c[g] === 1 ? `someone from Group ${g}` : `${c[g]} people from Group ${g}`); });
+  return parts.join(' and ') || 'nobody'; };
+const keyWord = () => (ADMIN && !ME) ? (CONF.key || []).join(' or ') : 'a key Controller';
 const other = g => g === 'A' ? 'B' : 'A';
 const loginEmail = id => { const v = String(id).trim().toLowerCase(); return v.includes('@') ? v : `${v}@${LOGIN_DOMAIN}`; };   // staff sign in with their staff number; a manager may use an email
 const toast = t => { const e = $('toast'); e.textContent = t; e.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => e.hidden = true, 5000); };
@@ -51,20 +57,20 @@ function allocate(slots) {
       if (days.some(d => (mine[r.name] || []).includes(d))) return 'Overlaps another of your own approved blocks.';
       for (const d of days) {
         const L = off[d];
-        if (L.length + 1 > CONF.maxTotal) return `${fmt(d)}: ${L.map(x => x.name).join(', ')} already on leave (max ${CONF.maxTotal} a day).`;
-        if (isLead(s.pos)) { const l = L.filter(x => isLead(x.pos)); if (l.length >= CONF.leadCap) return `${fmt(d)}: ${l.map(x => x.name).join(', ')} (Shift Lead/Controller) already on leave; only ${CONF.leadCap} at a time.`; }
+        if (L.length + 1 > CONF.maxTotal) return `${fmt(d)}: ${people(L)} already on leave (max ${CONF.maxTotal} a day).`;
+        if (isLead(s.pos)) { const l = L.filter(x => isLead(x.pos)); if (l.length >= CONF.leadCap) return `${fmt(d)}: ${people(l)} (Shift Lead/Controller) already on leave; only ${CONF.leadCap} at a time.`; }
         const hubs = L.filter(x => x.pos === 'HUB'); const keyOff = L.some(x => key.includes(x.name)) || key.includes(s.name);
-        if (s.pos === 'HUB') { const cap = keyOff ? CONF.hubKeyCap : CONF.hubCap; if (hubs.length + 1 > cap) return `${fmt(d)}: ${hubs.map(x => x.name).join(', ')} already on leave${keyOff ? ` while ${key.join(' or ')} is on leave, so only ${cap} Coordinator at a time` : ` (max ${cap} Coordinators)`}.`; }
-        if (key.includes(s.name) && hubs.length > CONF.hubKeyCap) return `${fmt(d)}: ${hubs.map(x => x.name).join(', ')} (Coordinators) are on leave, which needs ${s.name} at work.`;
+        if (s.pos === 'HUB') { const cap = keyOff ? CONF.hubKeyCap : CONF.hubCap; if (hubs.length + 1 > cap) return `${fmt(d)}: ${people(hubs)} already on leave${keyOff ? ` while ${keyWord()} is on leave, so only ${cap} Coordinator at a time` : ` (max ${cap} Coordinators)`}.`; }
+        if (key.includes(s.name) && hubs.length > CONF.hubKeyCap) return `${fmt(d)}: ${people(hubs)} (Coordinators) on leave, which needs ${ME && s.name === ME.name ? 'you' : (ADMIN && !ME) ? s.name : 'a key Controller'} at work.`;
       }
       return '';
     })();
     if (why) { r.why = why; return; }
-    const w = new Set(); days.forEach(d => off[d].forEach(x => w.add(x.name))); r.with = [...w]; r.overlap = w.size > 0;
-    if (r.overlap && used[s.grp] >= budget(s.grp)) { r.why = `Overlaps ${r.with.join(', ')} and Group ${s.grp} has used all ${budget(s.grp)} overlaps.`; return; }
-    if (r.overlap) { used[s.grp]++; r.why = `Overlaps ${r.with.join(', ')}; overlap ${used[s.grp]} of ${budget(s.grp)} for Group ${s.grp}.`; }
+    const w = new Map(); days.forEach(d => off[d].forEach(x => w.set(x.name, x))); r.with = [...w.values()]; r.overlap = w.size > 0;
+    if (r.overlap && used[s.grp] >= budget(s.grp)) { r.why = `Overlaps ${people(r.with)} and Group ${s.grp} has used all ${budget(s.grp)} overlaps.`; return; }
+    if (r.overlap) { used[s.grp]++; r.why = `Overlaps ${people(r.with)}; overlap ${used[s.grp]} of ${budget(s.grp)} for Group ${s.grp}.`; }
     else r.why = 'No conflict.';
-    r.ok = true; days.forEach(d => off[d].push({ name: s.name, pos: s.pos })); (mine[r.name] = mine[r.name] || []).push(...days);
+    r.ok = true; days.forEach(d => off[d].push({ name: s.name, pos: s.pos, grp: s.grp })); (mine[r.name] = mine[r.name] || []).push(...days);
   });
   return { order: rows, used, off };
 }
@@ -243,12 +249,36 @@ function render() {
 function renderState() { const o = isOpenNow(); $('state').className = 'pill ' + (o ? 'ok' : 'bad'); $('state').textContent = o ? (CONF.closeAt ? `Bidding open until ${when(CONF.closeAt)}` : 'Bidding open') : 'Bidding closed'; }
 function renderHero(A) {
   const h = $('hero');
-  if (!ME) { h.replaceChildren(el('div', { class: 'who' }, el('span', { class: 'big', text: 'OCC Manager' }), el('span', { class: 'sub', text: 'You can see every bid and the audit log, change settings and create staff logins. You cannot bid for anyone.' }))); return; }
+  if (!ME) { h.replaceChildren(el('div', { class: 'who' }, el('span', { class: 'big', text: 'OCC Manager' }), el('span', { class: 'sub', text: 'You can see every bid and the audit log, change settings and create staff logins. You cannot bid for anyone.' })), mgrAlert(A)); return; }
   const s = ME.s, prio = s.grp === CONF.prio, n = SLOTS.filter(x => x.name === ME.name && x.start).length;
   const ahead = A.order.filter(r => BY[r.name].grp === CONF.prio).length;
   h.replaceChildren(el('div', { class: 'who' }, el('span', { class: 'big', text: ME.name }), el('span', { class: 'sub', text: `${RL[s.pos]} · staff no. ${ME.no}` })),
     el('div', { class: 'prioBanner' }, el('span', { class: 'chip ' + s.grp, text: s.grp }), el('span', {}, el('b', { text: `Group ${s.grp}` }), prio ? ` has leave priority in 2027: your requests come before every Group ${other(s.grp)} request.` : ` follows Group ${CONF.prio}: ${ahead} Group ${CONF.prio} block${ahead === 1 ? '' : 's'} are ahead of you in the queue.`)),
-    el('div', { class: 'sub', text: `${n} of 4 slots chosen` }));
+    el('div', { class: 'sub', text: `${n} of 4 slots chosen` }), alertBox(A));
+}
+function mgrAlert(A) {
+  const bad = A.order.filter(r => !r.ok); if (!bad.length) return el('div', { class: 'sub', text: 'Every bid is currently approved.' });
+  const by = {}; bad.forEach(r => (by[r.name] = by[r.name] || []).push(`slot ${r.slot} (${blockLabel(r.start)})`));
+  return el('div', { style: 'grid-column:1/-1;border:2px solid var(--warn,#e67e22);background:#fff6e5;border-radius:10px;padding:10px 12px;margin-top:6px' },
+    el('b', { text: `${Object.keys(by).length} ${Object.keys(by).length === 1 ? 'person has' : 'people have'} refused slots to rebook. They see this when they sign in; you may also want to tell them:` }),
+    el('ul', { style: 'margin:6px 0 0 18px' }, ...Object.entries(by).map(([n, l]) => el('li', { text: `${n}: ${l.join(', ')}` }))));
+}
+// Tell staff when a slot they hold is no longer approved (e.g. a priority-group bid took the days).
+let SEEN = null;
+function alertBox(A) {
+  const mine = A.order.filter(r => r.name === ME.name); const bad = mine.filter(r => !r.ok);
+  const k = 'iocc-status-' + ME.no; let prev = {}; try { prev = JSON.parse(localStorage.getItem(k) || '{}'); } catch (e) { }
+  const K = r => r.slot + '@' + r.start;
+  const lost = bad.filter(r => prev[K(r)] === true || prev[K(r)] === 'lost'); const fresh = bad.filter(r => prev[K(r)] === true);
+  const nowSt = Object.fromEntries(mine.map(r => [K(r), r.ok ? true : lost.includes(r) ? 'lost' : false]));
+  if (SLOTS.length) try { localStorage.setItem(k, JSON.stringify({ ...prev, ...nowSt })); } catch (e) { }
+  if (fresh.length && SEEN !== null) toast(`Slot ${fresh.map(r => r.slot).join(', ')} is no longer approved. Please choose another block.`);
+  SEEN = true;
+  if (!bad.length) return null;
+  return el('div', { class: 'alertBox', role: 'alert', style: 'grid-column:1/-1;border:2px solid var(--bad,#c0392b);background:#fdecea;border-radius:10px;padding:10px 12px;margin-top:6px' },
+    el('b', { text: `Action needed: ${bad.length} of your slots ${bad.length === 1 ? 'is' : 'are'} not approved${lost.length ? ' (changed since your last visit)' : ''}.` }),
+    el('ul', { style: 'margin:6px 0 4px 18px' }, ...bad.map(r => el('li', {}, el('b', { text: `Slot ${r.slot} · ${blockLabel(r.start)}: ` }), r.why, ' ', el('button', { class: 'btn pri', type: 'button', text: `Choose a new block for slot ${r.slot}`, disabled: !isOpenNow(), onclick: () => { VIEW.target = r.slot; render(); $('pick-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); } })))),
+    el('span', { class: 'sub', text: isOpenNow() ? 'Your other slots keep their place in the queue.' : 'Bidding is closed; the OCC Manager will contact you.' }));
 }
 function renderMine(A) {
   if (!ME) { $('mine-card').hidden = true; $('pick-card').hidden = true; return; }
@@ -302,16 +332,23 @@ function renderCal(A) {
   const mine = new Set(); if (ME) A.order.filter(r => r.ok && r.name === ME.name).forEach(r => { for (let k = 0; k < 4; k++) mine.add(idx(r.start) + k); });
   $('cal').replaceChildren(...MN.map((m, mi) => {
     const a = MS[mi], b = MS[mi + 1], cells = []; for (let k = 0; k < dd(a).getUTCDay(); k++) cells.push(el('span', {}));
-    for (let d = a; d < b; d++) { const c = A.off[d].length; cells.push(el('span', { class: 'cald' + (c ? ' l' + Math.min(3, c) : '') + (mine.has(d) ? ' me' : ''), text: d - a + 1, title: `${fmt(d)}: ${c ? A.off[d].map(x => x.name).join(', ') : 'nobody'} on leave` })); }
+    for (let d = a; d < b; d++) { const c = A.off[d].length; cells.push(el('span', { class: 'cald' + (c ? ' l' + Math.min(3, c) : '') + (mine.has(d) ? ' me' : ''), text: d - a + 1, title: `${fmt(d)}: ${c ? people(A.off[d]) : 'nobody'} on leave` })); }
     return el('div', { class: 'calm' }, el('div', { class: 'sub', style: 'font-weight:600', text: m }), el('div', { class: 'calg' }, ...['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(x => el('span', { class: 'cald sub', text: x })), ...cells));
   }));
 }
 const RES_HEAD = ['Queue', 'Name', 'Group', 'Role', 'Slot', 'Leave block', 'Time-stamped (Dubai)', 'Status', 'Reason'];
 const resRow = r => { const s = BY[r.name]; return [r.queue, r.name, s.grp, RS[s.pos], r.slot, blockLabel(r.start), when(r.ts), status(r), r.why]; };
 function renderResults(A) {
-  $('res-sub').textContent = `Group ${CONF.prio} first, then Group ${other(CONF.prio)}; within a group, first come first served. Overlaps used: Group ${CONF.prio} ${A.used[CONF.prio]} of ${CONF.budgetP} · Group ${other(CONF.prio)} ${A.used[other(CONF.prio)]} of ${CONF.budgetO}.`;
+  $('res-sub').textContent = `Group ${CONF.prio} first, then Group ${other(CONF.prio)}; within a group, first come first served. Overlaps used: Group ${CONF.prio} ${A.used[CONF.prio]} of ${CONF.budgetP} · Group ${other(CONF.prio)} ${A.used[other(CONF.prio)]} of ${CONF.budgetO}.` + (ME ? ' Colleagues are shown only by group.' : '');
+  const pill = r => el('span', { class: 'pill ' + (r.ok ? (r.overlap ? 'warn' : 'ok') : 'bad'), text: status(r) });
+  if (ME) {   // staff view: no names, no roles
+    const H = ['Queue', 'Who', 'Leave block', 'Time-stamped (Dubai)', 'Status', 'Reason'];
+    $('results').replaceChildren(el('thead', {}, el('tr', {}, ...H.map(h => el('th', { text: h })))),
+      el('tbody', {}, ...(A.order.length ? A.order.map(r => { const me = r.name === ME.name, g = BY[r.name].grp; return el('tr', { class: me ? 'meRow' : '' }, el('td', { class: 'mono', text: r.queue }), el('td', {}, me ? el('b', { text: `You (slot ${r.slot})` }) : el('span', {}, el('span', { class: 'chip ' + g, text: g }), ` Someone from Group ${g}`)), el('td', { class: 'mono', text: blockLabel(r.start) }), el('td', { class: 'mono', text: when(r.ts) }), el('td', {}, pill(r)), el('td', { class: 'sub', text: me ? r.why : '' })); }) : [el('tr', {}, el('td', { colspan: 6, class: 'sub', text: 'No bids yet.' }))])));
+    return;
+  }
   $('results').replaceChildren(el('thead', {}, el('tr', {}, ...RES_HEAD.map(h => el('th', { text: h })))),
-    el('tbody', {}, ...(A.order.length ? A.order.map(r => { const s = BY[r.name]; return el('tr', { class: ME && r.name === ME.name ? 'meRow' : '' }, el('td', { class: 'mono', text: r.queue }), el('td', { text: r.name }), el('td', {}, el('span', { class: 'chip ' + s.grp, text: s.grp })), el('td', { text: RS[s.pos] }), el('td', { class: 'mono', text: r.slot }), el('td', { class: 'mono', text: blockLabel(r.start) }), el('td', { class: 'mono', text: when(r.ts) }), el('td', {}, el('span', { class: 'pill ' + (r.ok ? (r.overlap ? 'warn' : 'ok') : 'bad'), text: status(r) })), el('td', { class: 'sub', text: r.why })); }) : [el('tr', {}, el('td', { colspan: 9, class: 'sub', text: 'No bids yet.' }))])));
+    el('tbody', {}, ...(A.order.length ? A.order.map(r => { const s = BY[r.name]; return el('tr', {}, el('td', { class: 'mono', text: r.queue }), el('td', { text: r.name }), el('td', {}, el('span', { class: 'chip ' + s.grp, text: s.grp })), el('td', { text: RS[s.pos] }), el('td', { class: 'mono', text: r.slot }), el('td', { class: 'mono', text: blockLabel(r.start) }), el('td', { class: 'mono', text: when(r.ts) }), el('td', {}, pill(r)), el('td', { class: 'sub', text: r.why })); }) : [el('tr', {}, el('td', { colspan: 9, class: 'sub', text: 'No bids yet.' }))])));
 }
 const AUD_HEAD = ['When (Dubai)', 'Staff no.', 'Name', 'Action', 'Slot', 'Previous block', 'New block', 'Detail'];
 const audRow = a => [when(a.at), a.no, a.name, a.action, a.slot ?? '', a.prev ? blockLabel(a.prev) : '', a.next ? blockLabel(a.next) : '', a.detail || ''];
@@ -326,7 +363,8 @@ function rulesList() {
     `Coverage limits. A block is refused if, on any of its 4 days, it would put more than ${CONF.maxTotal} Sharjah staff on leave, more than ${CONF.leadCap} Shift Lead or Controller (Pre-Ops) on leave, or more than ${CONF.hubCap} Hub & Station Coordinators on leave (only ${CONF.hubKeyCap} while ${key} is on leave).`,
     `Overlaps. A block that overlaps leave already approved for someone else uses one of your group's overlaps: ${CONF.budgetP} for Group ${P} and ${CONF.budgetO} for Group ${O} for the whole year, in queue order. Once a group has used them all, its overlapping blocks are refused.`,
     `Live chance. Each block shows its chance of approval right now. Results are provisional until bidding closes: because Group ${P} comes first, a Group ${P} request made later can still take a block provisionally approved for Group ${O}.`,
-    'Refused blocks show the reason. Choose another block for that slot; it is time-stamped when you save it.',
+    'Refused blocks show the reason, and an "Action needed" box appears at the top of your page whenever one of your slots is not approved (including when a priority-group bid takes the days later). Choose another block for that slot; it is time-stamped when you save it. Check the site regularly while bidding is open.',
+    'Privacy. Colleagues are shown only as "someone from Group A" or "someone from Group B"; names are visible only to the OCC Manager.',
     `Your own login. Sign in with your staff number. On first sign-in you must choose your own password before you can bid, so nobody else can bid on your behalf. Nobody, including the manager, can place or change a bid for someone else. Every sign-in, password change and slot change is recorded with its date and time in an audit log that cannot be edited or deleted.`,
     'Final plan. After bidding closes, management confirms the plan. Scheduled training and operational needs take precedence; if an approved block clashes, you will be contacted to agree an alternative.',
   ];
