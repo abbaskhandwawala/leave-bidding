@@ -9,6 +9,7 @@ rules_version = '2';
 //  - Each slot change carries the server's time, and must be written together with an audit entry.
 //  - Audit entries can be added but never edited or deleted. Slots can't be deleted (withdraw = empty date).
 //  - Bids only change while bidding is open (and before the closing time, if set).
+//  - During the priority-only phase (config/settings.prioUntil), only the priority group can bid.
 service cloud.firestore {
   match /databases/{db}/documents {
 
@@ -18,9 +19,12 @@ service cloud.firestore {
     function isStaff() { return signedIn() && exists(/databases/$(db)/documents/staff/$(no())); }
     function staffName() { return get(/databases/$(db)/documents/staff/$(no())).data.name; }
     function pwChanged() { let p = /databases/$(db)/documents/pw/$(no()); return exists(p) && get(p).data.changed == true; }
+    function myGrp() { return get(/databases/$(db)/documents/staff/$(no())).data.get('grp', ''); }
+    // Open, before the closing time, and (during the priority-only phase) only for the priority group.
     function isOpen() {
       let s = get(/databases/$(db)/documents/config/settings).data;
-      return s.open == true && (!('closeAt' in s) || s.closeAt == null || request.time < s.closeAt);
+      return s.open == true && (!('closeAt' in s) || s.closeAt == null || request.time < s.closeAt)
+        && (!('prioUntil' in s) || s.prioUntil == null || request.time >= s.prioUntil || myGrp() == s.get('prio', 'A'));
     }
 
     // Managers: document ID = the manager's login (e.g. "manager"). Added once by hand.
