@@ -43,9 +43,9 @@ let VIEW = { month: 0, free: false, target: null };
 
 // ---------- allocation: priority group first, then first come first served by slot time
 function allocate(slots) {
-  const pr = s => s.grp === CONF.prio ? 0 : 1;
+  const pr = r => BY[r.name].grp === CONF.prio && (!CONF.prioUntil || r.ts < CONF.prioUntil) ? 0 : 1;   // with a priority phase, only bids saved in it come first
   const rows = slots.filter(r => r.start && BY[r.name]).map(r => ({ ...r }));
-  rows.sort((a, b) => pr(BY[a.name]) - pr(BY[b.name]) || a.ts - b.ts || a.name.localeCompare(b.name) || a.slot - b.slot);
+  rows.sort((a, b) => pr(a) - pr(b) || a.ts - b.ts || a.name.localeCompare(b.name) || a.slot - b.slot);
   const off = Array.from({ length: N + 4 }, () => []), used = { A: 0, B: 0 }, mine = {};
   const budget = g => g === CONF.prio ? CONF.budgetP : CONF.budgetO;
   const key = CONF.key || [];
@@ -78,15 +78,17 @@ const status = r => !r ? '' : r.ok ? (r.overlap ? 'Approved (overlap)' : 'Approv
 function tryBlock(n, start) {
   const cur = SLOTS.find(x => x.name === ME.name && x.slot === n);
   if (cur && cur.start === start) return allocate(SLOTS).order.find(x => x.name === ME.name && x.slot === n);
-  const rows = SLOTS.filter(x => !(x.name === ME.name && x.slot === n)).concat([{ name: ME.name, slot: n, start, ts: Date.now() + 1e9 }]);
+  const rows = SLOTS.filter(x => !(x.name === ME.name && x.slot === n)).concat([{ name: ME.name, slot: n, start, ts: Math.max(Date.now(), ...SLOTS.map(x => x.ts || 0)) + 1 }]);
   return allocate(rows).order.find(x => x.name === ME.name && x.slot === n);
 }
 const isOpenNow = () => CONF.open && (!CONF.closeAt || Date.now() < CONF.closeAt);
+const inPhase1 = () => !!CONF.prioUntil && Date.now() < CONF.prioUntil;   // priority group only
+const canBid = () => isOpenNow() && !(ME && inPhase1() && ME.s.grp !== CONF.prio);
 function chance(r) {
   if (!r || !r.ok) return 0;
   if (!isOpenNow()) return 100;
   let p = r.overlap ? 75 : 95;
-  if (BY[r.name].grp !== CONF.prio) {
+  if (BY[r.name].grp !== CONF.prio && !(CONF.prioUntil && Date.now() >= CONF.prioUntil)) {
     const pendingPrio = STAFF.filter(s => s.grp === CONF.prio && SLOTS.filter(x => x.name === s.name && x.start).length < 4).length;
     p -= Math.min(25, pendingPrio * 2);
   }
@@ -101,7 +103,7 @@ async function firebaseBackend() {
   const A = await import(base + 'firebase-auth.js');
   const F = await import(base + 'firebase-firestore.js');
   const app = initializeApp(firebaseConfig), auth = A.getAuth(app), db = F.getFirestore(app);
-  const conv = d => { const o = { ...d }; for (const k of ['ts', 'upd', 'at', 'closeAt']) if (o[k] && o[k].toMillis) o[k] = o[k].toMillis(); return o; };
+  const conv = d => { const o = { ...d }; for (const k of ['ts', 'upd', 'at', 'closeAt', 'prioUntil']) if (o[k] && o[k].toMillis) o[k] = o[k].toMillis(); return o; };
   const data = s => conv(s.data({ serverTimestamps: 'estimate' }));
   return {
     demo: false,
@@ -111,14 +113,14 @@ async function firebaseBackend() {
       const u = auth.currentUser; await A.reauthenticateWithCredential(u, A.EmailAuthProvider.credential(u.email, oldPw)); await A.updatePassword(u, newPw);
       await F.setDoc(F.doc(db, 'pw', u.email.toLowerCase().split('@')[0]), { changed: true, at: F.serverTimestamp() });
     },
-    createLogin: async (id, name) => {   // manager only: create a staff login with the default password without signing the manager out
+    createLogin: async (id, name, grp) => {   // manager only: create a staff login with the default password without signing the manager out
       if (!DEFAULT_PASSWORD) throw new Error('Set the first-login password in Manager controls first.');
       const sec = initializeApp(firebaseConfig, 'creator-' + Date.now()); const sa = A.getAuth(sec);
       let created = true;
       try { await A.createUserWithEmailAndPassword(sa, loginEmail(id), DEFAULT_PASSWORD); }
       catch (e) { if (e.code === 'auth/email-already-in-use') created = false; else throw e; }
       finally { try { await A.signOut(sa); } catch (e) { } await deleteApp(sec); }
-      await F.setDoc(F.doc(db, 'staff', String(id)), { name });
+      await F.setDoc(F.doc(db, 'staff', String(id)), { name, grp: grp || '' });
       if (created) await F.setDoc(F.doc(db, 'pw', String(id)), { changed: false });
       return created;
     },
@@ -155,14 +157,15 @@ function demoBackend() {
     onAuth: cb => { authCb = cb; cb(S.user); },
     signIn: async (id, p) => { id = String(id).trim().toLowerCase(); const ok = (S.staff[id] || S.admins[id]) && p === (S.pass[id] || S.initial.password); if (!ok) throw { code: 'auth/invalid-credential' }; S.user = { email: loginEmail(id), no: id }; save(); authCb(S.user); },
     changePassword: async (o, n) => { const id = S.user.no; if (o !== (S.pass[id] || S.initial.password)) throw { code: 'auth/invalid-credential' }; S.pass[id] = n; S.pw[id] = { changed: true, at: Date.now() }; save(); },
-    createLogin: async (id, name) => { const created = !S.staff[id] || !S.pw[id]; S.staff[id] = { name }; if (created) S.pw[id] = { changed: false }; save(); return created; },
+    createLogin: async (id, name, grp) => { const created = !S.staff[id] || !S.pw[id]; S.staff[id] = { name, grp }; if (created) S.pw[id] = { changed: false }; save(); return created; },
     signOut: async () => { S.user = null; save(); authCb(null); },
     get: async p => { const { c, d } = path(p); const v = col(c)[d]; return v ? { ...v } : null; },
     watchDoc: (p, cb) => watch(() => { const { c, d } = path(p); const v = col(c)[d]; cb(v ? { ...v } : null); }),
     watchCol: (p, cb, err, no) => watch(() => cb(Object.entries(col(p)).map(([id, v]) => ({ id, ...v })).filter(x => !no || x.no === no))),
     audit: async (who, e) => { addAudit(who, e); save(); },
     saveSlot: async (who, n, start, prev) => {
-      if (!(S.config.open && (!S.config.closeAt || Date.now() < S.config.closeAt)) || !(S.pw[who.no] || {}).changed) throw { code: 'permission-denied' };
+      const g = ((S.staffList.list || []).find(x => x.name === who.name) || {}).grp;
+      if (!(S.config.open && (!S.config.closeAt || Date.now() < S.config.closeAt)) || !(S.pw[who.no] || {}).changed || (S.config.prioUntil && Date.now() < S.config.prioUntil && g !== S.config.prio)) throw { code: 'permission-denied' };
       const id = `${who.no}__${n}`; const auditId = addAudit(who, { action: prev && prev.start ? (start ? 'Changed' : 'Withdrawn') : 'Added', slot: n, slotDoc: id, prev: prev ? prev.start ?? null : null, next: start });
       S.slots[id] = { no: who.no, name: who.name, slot: n, start, ts: Date.now(), upd: Date.now(), auditId }; save();
     },
@@ -246,14 +249,14 @@ function render() {
   const A = allocate(SLOTS);
   renderState(); renderHero(A); renderMine(A); renderPick(); renderCal(A); renderResults(A); renderMyAudit(); renderRules(); renderAdmin(A);
 }
-function renderState() { const o = isOpenNow(); $('state').className = 'pill ' + (o ? 'ok' : 'bad'); $('state').textContent = o ? (CONF.closeAt ? `Bidding open until ${when(CONF.closeAt)}` : 'Bidding open') : 'Bidding closed'; }
+function renderState() { const o = isOpenNow(); $('state').className = 'pill ' + (o ? 'ok' : 'bad'); $('state').textContent = !o ? 'Bidding closed' : inPhase1() ? `Group ${CONF.prio} only until ${when(CONF.prioUntil)} · then everyone` : (CONF.closeAt ? `Bidding open to all until ${when(CONF.closeAt)}` : 'Bidding open'); }
 function renderHero(A) {
   const h = $('hero');
   if (!ME) { h.replaceChildren(el('div', { class: 'who' }, el('span', { class: 'big', text: 'OCC Manager' }), el('span', { class: 'sub', text: 'You can see every bid and the audit log, change settings and create staff logins. You cannot bid for anyone.' })), mgrAlert(A)); return; }
   const s = ME.s, prio = s.grp === CONF.prio, n = SLOTS.filter(x => x.name === ME.name && x.start).length;
   const ahead = A.order.filter(r => BY[r.name].grp === CONF.prio).length;
   h.replaceChildren(el('div', { class: 'who' }, el('span', { class: 'big', text: ME.name }), el('span', { class: 'sub', text: `${RL[s.pos]} · staff no. ${ME.no}` })),
-    el('div', { class: 'prioBanner' }, el('span', { class: 'chip ' + s.grp, text: s.grp }), el('span', {}, el('b', { text: `Group ${s.grp}` }), prio ? ` has leave priority in 2027: your requests come before every Group ${other(s.grp)} request.` : ` follows Group ${CONF.prio}: ${ahead} Group ${CONF.prio} block${ahead === 1 ? '' : 's'} are ahead of you in the queue.`)),
+    el('div', { class: 'prioBanner' }, el('span', { class: 'chip ' + s.grp, text: s.grp }), el('span', {}, el('b', { text: `Group ${s.grp}` }), phaseText(prio, ahead))),
     el('div', { class: 'sub', text: `${n} of 4 slots chosen` }), alertBox(A));
 }
 function mgrAlert(A) {
@@ -262,6 +265,12 @@ function mgrAlert(A) {
   return el('div', { style: 'grid-column:1/-1;border:2px solid var(--warn,#e67e22);background:#fff6e5;border-radius:10px;padding:10px 12px;margin-top:6px' },
     el('b', { text: `${Object.keys(by).length} ${Object.keys(by).length === 1 ? 'person has' : 'people have'} refused slots to rebook. They see this when they sign in; you may also want to tell them:` }),
     el('ul', { style: 'margin:6px 0 0 18px' }, ...Object.entries(by).map(([n, l]) => el('li', { text: `${n}: ${l.join(', ')}` }))));
+}
+function phaseText(prio, ahead) {
+  const P = CONF.prio, O = other(P);
+  if (!CONF.prioUntil) return prio ? ` has leave priority in 2027: your requests come before every Group ${O} request.` : ` follows Group ${P}: ${ahead} Group ${P} block${ahead === 1 ? '' : 's'} are ahead of you in the queue.`;
+  if (inPhase1()) return prio ? ` has leave priority in 2027: only Group ${P} can bid until ${when(CONF.prioUntil)}. Bids saved before then come first. After that Group ${O} joins and every new or changed bid is first come, first served.` : ` bids from ${when(CONF.prioUntil)}. Until then only Group ${P} can bid; you can already see which days are free. From then on it is first come, first served, and nobody can take a block approved for you.`;
+  return prio ? ` priority phase ended ${when(CONF.prioUntil)}. Your bids saved before then keep priority; any new or changed bid is now first come, first served.` : ` can bid now (from ${when(CONF.prioUntil)}). Everything is first come, first served from here, so a block approved for you cannot be taken by a later bid.`;
 }
 // Tell staff when a slot they hold is no longer approved (e.g. a priority-group bid took the days).
 let SEEN = null;
@@ -277,14 +286,14 @@ function alertBox(A) {
   if (!bad.length) return '';
   return el('div', { class: 'alertBox', role: 'alert', style: 'grid-column:1/-1;border:2px solid var(--bad,#c0392b);background:#fdecea;border-radius:10px;padding:10px 12px;margin-top:6px' },
     el('b', { text: `Action needed: ${bad.length} of your slots ${bad.length === 1 ? 'is' : 'are'} not approved${lost.length ? ' (changed since your last visit)' : ''}.` }),
-    el('ul', { style: 'margin:6px 0 4px 18px' }, ...bad.map(r => el('li', {}, el('b', { text: `Slot ${r.slot} · ${blockLabel(r.start)}: ` }), r.why, ' ', el('button', { class: 'btn pri', type: 'button', text: `Choose a new block for slot ${r.slot}`, disabled: !isOpenNow(), onclick: () => { VIEW.target = r.slot; render(); $('pick-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); } })))),
+    el('ul', { style: 'margin:6px 0 4px 18px' }, ...bad.map(r => el('li', {}, el('b', { text: `Slot ${r.slot} · ${blockLabel(r.start)}: ` }), r.why, ' ', el('button', { class: 'btn pri', type: 'button', text: `Choose a new block for slot ${r.slot}`, disabled: !canBid(), onclick: () => { VIEW.target = r.slot; VIEW.auto = false; render(); $('pick-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); } })))),
     el('span', { class: 'sub', text: isOpenNow() ? 'Your other slots keep their place in the queue.' : 'Bidding is closed; the OCC Manager will contact you.' }));
 }
 function renderMine(A) {
   if (!ME) { $('mine-card').hidden = true; $('pick-card').hidden = true; return; }
   $('mine-card').hidden = false; $('pick-card').hidden = false;
-  if (!VIEW.target) VIEW.target = [1, 2, 3, 4].find(k => !SLOTS.find(x => x.name === ME.name && x.slot === k && x.start)) || 1;
-  const open = isOpenNow();
+  if (!VIEW.target || VIEW.auto) { VIEW.target = [1, 2, 3, 4].find(k => !SLOTS.find(x => x.name === ME.name && x.slot === k && x.start)) || 1; VIEW.auto = true; }   // follow the first empty slot until the person picks one
+  const open = canBid();
   $('mine').replaceChildren(...[1, 2, 3, 4].map(n => {
     const d = SLOTS.find(x => x.name === ME.name && x.slot === n); const r = d && d.start ? A.order.find(x => x.name === ME.name && x.slot === n) : null;
     const [, t] = chanceLabel(chance(r));
@@ -292,7 +301,7 @@ function renderMine(A) {
       el('span', { class: 'n', text: 'Slot ' + n }), el('span', { class: 'dt', text: d && d.start ? blockLabel(d.start) : '—' }),
       el('span', {}, d && d.start ? el('span', { class: 'pill ' + (r.ok ? (r.overlap ? 'warn' : 'ok') : 'bad'), text: status(r) + (r.ok && open ? ` · ${t}` : '') }) : el('span', { class: 'sub', text: 'empty' })),
       el('span', { class: 'why sub' }, d && d.start ? `${r.why} Time-stamped ${when(d.ts)} (queue #${r.queue}).` : 'Not chosen yet.'),
-      el('span', { class: 'row' }, el('button', { class: 'btn' + (VIEW.target === n ? ' pri' : ''), type: 'button', text: d && d.start ? 'Change' : 'Choose', disabled: !open, onclick: () => { VIEW.target = n; render(); $('pick-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); } }),
+      el('span', { class: 'row' }, el('button', { class: 'btn' + (VIEW.target === n ? ' pri' : ''), type: 'button', text: d && d.start ? 'Change' : 'Choose', disabled: !open, onclick: () => { VIEW.target = n; VIEW.auto = false; render(); $('pick-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); } }),
         el('button', { class: 'btn', type: 'button', text: 'Withdraw', disabled: !open || !(d && d.start), onclick: () => saveSlot(n, null) })));
   }));
 }
@@ -303,7 +312,7 @@ function renderPick() {
   msel.value = VIEW.month; msel.onchange = () => { VIEW.month = +msel.value; renderPick(); };
   $('f-free').checked = VIEW.free; $('f-free').onchange = e => { VIEW.free = e.target.checked; renderPick(); };
   const di = $('f-date'); di.onchange = () => { if (!di.value) return; const i = idx(di.value); VIEW.month = MS.findIndex((m, k) => i >= m && i < MS[k + 1]); renderPick(); setTimeout(() => { const r = document.querySelector(`[data-start="${di.value}"]`); if (r) { r.scrollIntoView({ block: 'center' }); r.classList.add('flash'); } }, 50); };
-  const open = isOpenNow();
+  const open = canBid();
   const mineDays = new Set(); SLOTS.filter(x => x.name === ME.name && x.start && x.slot !== n).forEach(x => { for (let k = 0; k < 4; k++) mineDays.add(idx(x.start) + k); });
   let list = []; for (let a = MS[VIEW.month]; a < MS[VIEW.month + 1] && a <= LAST_START; a++) {
     const x = isoOf(a); const own = [0, 1, 2, 3].some(k => mineDays.has(a + k)); const r = own ? null : tryBlock(n, x);
@@ -325,7 +334,7 @@ async function saveSlot(n, start) {
   if (prev && prev.start === start) return;
   if (prev && prev.start && start && !confirm(`Replace slot ${n} (${blockLabel(prev.start)}) with ${blockLabel(start)}? The slot gets a new timestamp, so it joins the queue from now.`)) return;
   if (!start && !confirm(`Withdraw slot ${n} (${blockLabel(prev.start)})? You lose its place in the queue.`)) return;
-  try { await B.saveSlot({ no: ME.no, name: ME.name }, n, start, prev); toast(start ? `Slot ${n} saved: ${blockLabel(start)}. Time-stamped now.` : `Slot ${n} withdrawn.`); const next = [1, 2, 3, 4].find(k => k !== n && !SLOTS.find(x => x.name === ME.name && x.slot === k && x.start)); if (start && next) VIEW.target = next; render(); }
+  try { await B.saveSlot({ no: ME.no, name: ME.name }, n, start, prev); toast(start ? `Slot ${n} saved: ${blockLabel(start)}. Time-stamped now.` : `Slot ${n} withdrawn.`); const next = [1, 2, 3, 4].find(k => k !== n && !SLOTS.find(x => x.name === ME.name && x.slot === k && x.start)); if (start && next) { VIEW.target = next; VIEW.auto = true; } render(); }
   catch (e) { toast('Not saved: ' + errText(e)); }
 }
 function renderCal(A) {
@@ -358,11 +367,13 @@ function rulesList() {
   const P = CONF.prio, O = other(P), key = (CONF.key || []).join(' or ');
   return [
     'Leave blocks. You can bid for up to 4 blocks of 4 consecutive days of annual leave in 2027. Choose the first day of each block; the block runs for 4 days from that date.',
-    `Priority order. First by group: Group ${P} has leave priority in 2027, so every Group ${P} request is considered before any Group ${O} request. Second, within each group: first come, first served, by the time each slot was saved.`,
+    CONF.prioUntil ? `Two phases. Phase 1, until ${when(CONF.prioUntil)}: only Group ${P} can bid (Group ${P} has leave priority in 2027). Phase 2, from then until bidding closes: everyone can bid. Phase 1 bids are considered first; after that, every new or changed bid is first come, first served, so a block approved for someone cannot be taken by a later bid from either group.`
+      : `Priority order. First by group: Group ${P} has leave priority in 2027, so every Group ${P} request is considered before any Group ${O} request. Second, within each group: first come, first served, by the time each slot was saved.`,
     'Each slot has its own timestamp, set by the server when you save it. Changing or withdrawing a slot gives up its old time; the new choice joins the queue from the moment you save it. Slots you leave alone keep their time.',
     `Coverage limits. A block is refused if, on any of its 4 days, it would put more than ${CONF.maxTotal} Sharjah staff on leave, more than ${CONF.leadCap} Shift Lead or Controller (Pre-Ops) on leave, or more than ${CONF.hubCap} Hub & Station Coordinators on leave (only ${CONF.hubKeyCap} while ${key} is on leave).`,
     `Overlaps. A block that overlaps leave already approved for someone else uses one of your group's overlaps: ${CONF.budgetP} for Group ${P} and ${CONF.budgetO} for Group ${O} for the whole year, in queue order. Once a group has used them all, its overlapping blocks are refused.`,
-    `Live chance. Each block shows its chance of approval right now. Results are provisional until bidding closes: because Group ${P} comes first, a Group ${P} request made later can still take a block provisionally approved for Group ${O}.`,
+    CONF.prioUntil ? 'Live chance. Each block shows whether it can be approved right now. Once a block is approved it stays approved unless the plan changes for operational reasons.'
+      : `Live chance. Each block shows its chance of approval right now. Results are provisional until bidding closes: because Group ${P} comes first, a Group ${P} request made later can still take a block provisionally approved for Group ${O}.`,
     'Refused blocks show the reason, and an "Action needed" box appears at the top of your page whenever one of your slots is not approved (including when a priority-group bid takes the days later). Choose another block for that slot; it is time-stamped when you save it. Check the site regularly while bidding is open.',
     'Privacy. Colleagues are shown only as "someone from Group A" or "someone from Group B"; names are visible only to the OCC Manager.',
     `Your own login. Sign in with your staff number. On first sign-in you must choose your own password before you can bid, so nobody else can bid on your behalf. Nobody, including the manager, can place or change a bid for someone else. Every sign-in, password change and slot change is recorded with its date and time in an audit log that cannot be edited or deleted.`,
@@ -375,7 +386,13 @@ function renderRules() { $('rules').replaceChildren(...rulesList().map(t => el('
 let XLSXP = null;
 function loadXLSX() { if (window.XLSX) return Promise.resolve(); if (XLSXP) return XLSXP; XLSXP = new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload = ok; s.onerror = () => no(new Error('Could not load the Excel library.')); document.head.append(s); }); return XLSXP; }
 async function download(name, sheets) { await loadXLSX(); const wb = XLSX.utils.book_new(); sheets.forEach(([n, aoa]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), n)); XLSX.writeFile(wb, name); }
+let SYNCING = false;
+async function syncStaffGroups() {
+  if (SYNCING || !ADMIN) return; SYNCING = true;
+  try { for (const x of STAFFMAP) { const s = BY[x.name]; if (s && x.grp !== s.grp) await B.set('staff/' + x.id, { name: x.name, grp: s.grp }); } } catch (e) { } finally { SYNCING = false; }
+}
 function renderAdmin(A) {
+  if (ADMIN && STAFFMAP.some(x => BY[x.name] && x.grp !== BY[x.name].grp)) syncStaffGroups();
   if (!ADMIN) { $('admin').hidden = true; return; } $('admin').hidden = false;
   const ae = document.activeElement; const busy = ae && ae.matches('input,select') && ($('adm-set').contains(ae) || $('adm-staff').contains(ae) || $('adm-staff-add').contains(ae) || $('adm-staff-pw').contains(ae));
   if (!busy) renderAdminForms(A);
@@ -391,12 +408,14 @@ function renderAdminForms(A) {
   const openSel = el('select', { 'aria-label': 'Bidding open' }, el('option', { value: '1', text: 'Open' }), el('option', { value: '0', text: 'Closed' })); openSel.value = c.open ? '1' : '0'; openSel.onchange = () => c.open = openSel.value === '1';
   const pad = n => String(n).padStart(2, '0'); const lv = ms => { if (!ms) return ''; const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
   const close = el('input', { type: 'datetime-local', value: lv(c.closeAt), 'aria-label': 'Closing date and time' }); close.onchange = () => c.closeAt = close.value ? new Date(close.value).getTime() : null;
+  const pu = el('input', { type: 'datetime-local', value: lv(c.prioUntil), 'aria-label': 'Priority-only phase ends' }); pu.onchange = () => c.prioUntil = pu.value ? new Date(pu.value).getTime() : null;
   const prio = el('select', { 'aria-label': 'Priority group' }, el('option', { value: 'A', text: 'Group A' }), el('option', { value: 'B', text: 'Group B' })); prio.value = c.prio; prio.onchange = () => c.prio = prio.value;
   const keySel = el('select', { multiple: true, size: 4, 'aria-label': 'Key people' }, ...STAFF.filter(s => isLead(s.pos)).map(s => { const o = el('option', { value: s.name, text: s.name }); o.selected = (c.key || []).includes(s.name); return o; })); keySel.onchange = () => c.key = [...keySel.selectedOptions].map(o => o.value);
   const save = el('button', { class: 'btn pri', type: 'button', text: 'Save settings', onclick: async () => {
-    const out = { open: !!c.open, closeAt: B.stamp(c.closeAt || null), prio: c.prio, maxTotal: c.maxTotal, leadCap: c.leadCap, hubCap: c.hubCap, hubKeyCap: c.hubKeyCap, key: c.key || [], budgetP: c.budgetP, budgetO: c.budgetO };
-    try { await B.set('config/settings', out); await B.audit(me, { action: 'Settings changed', detail: JSON.stringify({ ...out, closeAt: c.closeAt ? when(c.closeAt) : null }) }); toast('Settings saved.'); } catch (e) { toast('Not saved: ' + errText(e)); } } });
-  $('adm-set').replaceChildren(el('div', { class: 'row' }, el('label', { class: 'lbl' }, 'Bidding', openSel), el('label', { class: 'lbl' }, 'Closes (optional)', close), el('label', { class: 'lbl' }, 'Priority group', prio)),
+    if (c.prioUntil && c.closeAt && c.prioUntil >= c.closeAt) { toast('The priority-only phase must end before bidding closes.'); return; }
+    const out = { open: !!c.open, closeAt: B.stamp(c.closeAt || null), prioUntil: B.stamp(c.prioUntil || null), prio: c.prio, maxTotal: c.maxTotal, leadCap: c.leadCap, hubCap: c.hubCap, hubKeyCap: c.hubKeyCap, key: c.key || [], budgetP: c.budgetP, budgetO: c.budgetO };
+    try { await B.set('config/settings', out); await B.audit(me, { action: 'Settings changed', detail: JSON.stringify({ ...out, closeAt: c.closeAt ? when(c.closeAt) : null, prioUntil: c.prioUntil ? when(c.prioUntil) : null }) }); toast('Settings saved.'); } catch (e) { toast('Not saved: ' + errText(e)); } } });
+  $('adm-set').replaceChildren(el('div', { class: 'row' }, el('label', { class: 'lbl' }, 'Bidding', openSel), el('label', { class: 'lbl' }, 'Closes (optional)', close), el('label', { class: 'lbl' }, 'Priority group', prio), el('label', { class: 'lbl', title: 'Until this time only the priority group can bid, and those bids come first. After it everyone can bid, first come first served, so nobody loses an approved block to a later bid. Leave empty for the old rule (priority group always first).' }, 'Priority-group-only phase ends', pu)),
     el('div', { class: 'row' }, num('Max on leave a day', 'maxTotal', 1, 8), num('Leads/Controllers at once', 'leadCap', 1, 4), num('Coordinators at once', 'hubCap', 1, 4), num('…while a key person is off', 'hubKeyCap', 0, 4), num('Overlaps, priority group', 'budgetP', 0, 40), num('Overlaps, other group', 'budgetO', 0, 40)),
     el('div', { class: 'row' }, el('label', { class: 'lbl' }, 'Key people (Coordinator rule)', keySel), save));
   // staff logins
@@ -405,7 +424,7 @@ function renderAdminForms(A) {
   const create = async (s, v) => {
     if (!/^[0-9a-z]{3,20}$/i.test(v)) { toast('Enter the staff number (letters/digits only).'); return false; }
     const taken = STAFFMAP.find(x => x.id === v && x.name !== s.name); if (taken) { toast(`${v} is already ${taken.name}'s login.`); return false; }
-    try { if (noOf[s.name] && noOf[s.name] !== v) await B.del('staff/' + noOf[s.name]); const created = await B.createLogin(v, s.name); await B.audit(me, { action: created ? 'Login created' : 'Login linked', detail: `${s.name}: staff no. ${v}` }); return true; }
+    try { if (noOf[s.name] && noOf[s.name] !== v) await B.del('staff/' + noOf[s.name]); const created = await B.createLogin(v, s.name, s.grp); await B.audit(me, { action: created ? 'Login created' : 'Login linked', detail: `${s.name}: staff no. ${v}` }); return true; }
     catch (e) { toast(`${s.name}: ${errText(e)}`); return false; }
   };
   const inputs = {};
